@@ -1,4 +1,3 @@
-
 import pandas as pd
 import matplotlib.pyplot as plt
 from matplotlib.widgets import Button
@@ -65,41 +64,50 @@ def classify_signal(rssi):
         return "Weak"
     return "Very Weak"
 
-# Load Member 3's dead-zone detection results
-DEAD_ZONE_FILE = DATA_DIR / "dead_zone_results.csv"
-
-if not DEAD_ZONE_FILE.exists():
-    raise FileNotFoundError(
-        f"Dead-zone results not found: {DEAD_ZONE_FILE}\n"
-        "Run detect_dead_zones.py first."
-    )
-
-dead_zone_df = pd.read_csv(DEAD_ZONE_FILE)
-
-required_dead_zone_columns = [
-    "location_id", "dead_zone", "status"
-]
-missing_dead_zone_columns = [
-    c for c in required_dead_zone_columns
-    if c not in dead_zone_df.columns
-]
-
-if missing_dead_zone_columns:
-    raise ValueError(
-        f"Missing columns in dead-zone results: "
-        f"{missing_dead_zone_columns}"
-    )
-
-dead_zone_df["location_id"] = (
-    dead_zone_df["location_id"].astype(str).str.strip().str.upper()
-)
-location_data["location_id"] = (
-    location_data["location_id"].astype(str).str.strip().str.upper()
-)
 
 location_data["signal_quality"] = (
     location_data["rssi_dbm"].apply(classify_signal)
 )
+# ==================================================
+# 3. LOAD AND MERGE DEAD-ZONE RESULTS
+# ==================================================
+
+DEAD_ZONE_FILE = DATA_DIR / "dead_zone_results.csv"
+
+if not DEAD_ZONE_FILE.exists():
+    raise FileNotFoundError(
+        f"Dead-zone results not found:\n{DEAD_ZONE_FILE}\n"
+        "Run detect_dead_zones.py first."
+    )
+
+dead_zone_df = pd.read_csv(DEAD_ZONE_FILE)
+required_dead_zone_columns = ["location_id", "dead_zone", "status"]
+missing_dead_zone_columns = [
+    column for column in required_dead_zone_columns
+    if column not in dead_zone_df.columns
+]
+
+if missing_dead_zone_columns:
+    raise ValueError(
+        "Dead-zone results are missing required columns: "
+        f"{missing_dead_zone_columns}"
+    )
+
+# Normalize IDs so matching is not affected by spaces or letter case.
+location_data["location_id"] = (
+    location_data["location_id"].astype(str).str.strip().str.upper()
+)
+dead_zone_df["location_id"] = (
+    dead_zone_df["location_id"].astype(str).str.strip().str.upper()
+)
+
+if dead_zone_df["location_id"].duplicated().any():
+    duplicates = dead_zone_df.loc[
+        dead_zone_df["location_id"].duplicated(), "location_id"
+    ].tolist()
+    raise ValueError(
+        f"Duplicate location IDs in dead-zone results: {duplicates}"
+    )
 
 location_data = location_data.merge(
     dead_zone_df[["location_id", "dead_zone", "status"]],
@@ -109,9 +117,13 @@ location_data = location_data.merge(
 )
 
 if location_data[["dead_zone", "status"]].isna().any().any():
+    unmatched = location_data.loc[
+        location_data[["dead_zone", "status"]].isna().any(axis=1),
+        "location_id"
+    ].tolist()
     raise ValueError(
-        "Some locations have no matching dead-zone detection results. "
-        "Run detect_dead_zones.py and check the location IDs."
+        "No matching dead-zone result for location(s): "
+        f"{unmatched}. Check the IDs and rerun detect_dead_zones.py."
     )
 
 print("\n========== WI-FI QUALITY RESULTS ==========")
@@ -123,7 +135,6 @@ print(
         ]
     ].round(2).to_string(index=False)
 )
-
 # ==================================================
 # 3. HELPER: DETAILS FOR A SELECTED LOCATION
 # ==================================================
@@ -145,7 +156,6 @@ def get_location_details(location_id):
         f"Status: {summary['status']}",
         f"Readings at location: {len(original)}",
     ]
-
     # Include optional fields when the dataset provides them.
     for column, label in [
         ("ssid", "SSID"),
@@ -165,7 +175,6 @@ def get_location_details(location_id):
                 details.append(f"{label}: {shown}")
 
     return "\n".join(details)
-
 # ==================================================
 # 4. FIGURE 1: CLICKABLE WI-FI QUALITY MAP
 # ==================================================
@@ -186,14 +195,12 @@ if not acceptable.empty:
         color="green", s=190, edgecolors="black",
         label="Acceptable Signal", zorder=3
     )
-
 if not dead_zones.empty:
     ax.scatter(
         dead_zones["x_m"], dead_zones["y_m"],
         color="red", s=190, edgecolors="black",
         label="Potential Dead Zone", zorder=3
     )
-
 # One readable label per point
 for i, (_, row) in enumerate(location_data.iterrows()):
     offset = 18 if i % 2 == 0 else -18
@@ -215,7 +222,6 @@ for i, (_, row) in enumerate(location_data.iterrows()):
         ),
         zorder=4
     )
-
 ax.set_title("Wi-Fi Quality Map — Click a Point for Details", pad=18)
 ax.set_xlabel("X coordinate (m)")
 ax.set_ylabel("Y coordinate (m)")
@@ -237,7 +243,6 @@ details_text = fig.text(
         edgecolor="gray"
     )
 )
-
 # Create one scatter collection for reliable click detection.
 click_points = ax.scatter(
     location_data["x_m"],
@@ -248,7 +253,6 @@ click_points = ax.scatter(
     picker=True,
     zorder=5
 )
-
 # Keep references to callbacks and interactive objects alive.
 def on_map_click(event):
     if event.inaxes != ax or event.xdata is None or event.ydata is None:
@@ -284,11 +288,9 @@ def on_map_click(event):
 map_callback_id = fig.canvas.mpl_connect(
     "button_press_event", on_map_click
 )
-
 quality_map_file = DATA_DIR / "wifi_quality_map.png"
 fig.savefig(quality_map_file, dpi=300, bbox_inches="tight")
 print(f"\nQuality map saved to:\n{quality_map_file}")
-
 # ==================================================
 # 5. FIGURE 2: INTERPOLATED COVERAGE HEATMAP
 # ==================================================
@@ -306,7 +308,6 @@ interp_df = pd.DataFrame({
     "y_m": y,
     "rssi_dbm": signal
 })
-
 interp_df = (
     interp_df.groupby(["x_m", "y_m"], as_index=False)
     .agg(rssi_dbm=("rssi_dbm", "mean"))
@@ -321,7 +322,6 @@ can_interpolate = (
     len(interp_coords) >= 3
     and np.linalg.matrix_rank(centered) >= 2
 )
-
 heat = None
 
 if can_interpolate:
@@ -352,16 +352,20 @@ if can_interpolate:
                 label="Estimated signal strength (dBm)"
             )
         else:
-            print("Heatmap interpolation unavailable; showing points only.")
+            print(
+                "Heatmap interpolation unavailable; showing points only."
+            )
 
     except (ValueError, RuntimeError) as error:
         print(f"Heatmap interpolation failed: {error}")
+
 else:
     print(
         "Insufficient distinct, non-collinear coordinates for a 2D heatmap. "
         "Showing measured locations only."
     )
-
+     
+    
 # Plot and label actual measurements
 ax_heat.scatter(
     x, y,
@@ -375,7 +379,6 @@ ax_heat.scatter(
     label="Measured locations",
     zorder=3
 )
-
 for _, row in location_data.iterrows():
     ax_heat.annotate(
         f"{row['location_id']}\n{row['rssi_dbm']:.1f} dBm",
@@ -394,7 +397,6 @@ for _, row in location_data.iterrows():
         ),
         zorder=4
     )
-
 ax_heat.set_title("Wi-Fi Coverage Heatmap (Estimated Between Measurements)")
 ax_heat.set_xlabel("X coordinate (m)")
 ax_heat.set_ylabel("Y coordinate (m)")
@@ -414,3 +416,4 @@ print(f"Coverage heatmap saved to:\n{heatmap_file}")
 print("\nClick a point on the Wi-Fi Quality Map to view its details.")
 print("Close the graph windows to finish the program.")
 plt.show()
+
