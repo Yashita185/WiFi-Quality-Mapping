@@ -1,80 +1,79 @@
-# Wi-Fi Network Quality Mapping and Dead-Zone Detection System
+# Wi-Fi Quality Mapping — Wi-Fi Quality Mapping & Dead-Zone Diagnostics
 
-## 1. Project Overview
+A local Streamlit application for analyzing Wi-Fi RSSI measurements across a set of mapped locations. It combines an interactive spatial coverage view, signal-quality summaries, variability diagnostics, threshold-based low-coverage flags, data validation, and downloadable reports.
 
-This project measures Wi-Fi signal strength at multiple physical locations to support network quality mapping and dead-zone detection.
+## Features
 
-My contribution focuses on collecting Wi-Fi measurements, storing them in CSV format, summarizing signal strength, and validating the collected dataset.
+- **Interactive coverage plane:** hoverable location points, coordinates, mean/min/max RSSI, reading count, quality category, and status.
+- **Estimated coverage surface:** inverse-distance-weighted interpolation between measured points. This is a visualization estimate, not a replacement for measurements.
+- **Diagnostics:** mean, min/max, standard deviation, percentage of readings below -67 dBm, and threshold-based potential dead-zone flags.
+- **Method comparison:** compares an any-reading baseline with a mean-based decision to illustrate the effect of outliers.
+- **Data explorer:** filter readings, inspect data quality, upload a CSV for inspection, and export the current measurements.
+- **Reports:** downloadable text and HTML analysis summaries.
+- **Measurement entry:** add a manually recorded reading or prefill network details from Windows `netsh`.
+- **Tests:** unit tests for data cleaning, summary calculations, signal classes, and interpolation preconditions.
 
-## 2. Tools and Technologies
+## Requirements
 
-- Python 3
-- Windows Command Prompt / PowerShell
-- VS Code
-- Windows `netsh` command
-- CSV files for measurement storage
+- Python 3.10 or newer recommended
+- Windows for the optional live scan button (`netsh`); all CSV analysis and dashboard features can run on other platforms
 
-## 3. Module Files
+## Run on Windows (PowerShell)
 
-- `wifi_collector.py` — collects Wi-Fi measurements at specified locations.
-- `analyze_data.py` — calculates RSSI statistics for each location.
-- `validate_data.py` — checks the dataset for missing fields, invalid values, duplicate records, and measurement consistency.
-- `data/wifi_measurements.csv` — stores the raw measurement records.
-- `data/wifi_summary.csv` — stores the summarized RSSI statistics.
+Open the extracted project folder in VS Code. Make sure the terminal is in the directory containing `app.py` and `requirements.txt`.
 
-## 4. Execution Instructions
-
-Run the commands from the project root directory:
-
-```bash
-python wifi_collector.py
-python validate_data.py
-python analyze_data.py
+```powershell
+py -m venv .venv
+.\.venv\Scripts\Activate.ps1
+py -m pip install -r requirements.txt
+py -m streamlit run app.py
 ```
 
-The collector asks for the location identifier, coordinates, number of readings, and interval between readings.
+Open the local URL printed by Streamlit, usually `http://localhost:8501`.
 
-## 5. Initial Dataset
+If `requirements.txt` is in a nested folder, use `dir` to locate the folder containing both `app.py` and `requirements.txt`, then `cd` into it before running the commands.
 
-- Number of locations: 5
-- Readings per location: 5
-- Total readings: 25
-- Locations: P1, P2, P3, P4, P5
+## Run the analysis tests
 
-## 6. Initial Results
+```powershell
+py -m unittest discover -s tests -v
+```
 
-| Location | Mean RSSI |
-|---|---:|
-| P1 | -55.0 dBm |
-| P2 | -61.0 dBm |
-| P3 | -46.2 dBm |
-| P4 | -54.4 dBm |
-| P5 | -53.0 dBm |
+## Data format
 
-P3 recorded the strongest mean signal, while P2 recorded the weakest mean signal in this initial dataset. These results identify locations for further investigation but do not independently establish a dead zone.
+The main input file is `data/wifi_measurements.csv`. It expects columns such as `timestamp`, `location_id`, `x_m`, `y_m`, `ssid`, `rssi_dbm`, `signal_percent`, `band`, `channel`, `receive_rate_mbps`, and `transmit_rate_mbps`. Missing optional columns are added during normalization; rows without a location, coordinates, or valid RSSI are excluded from spatial analysis.
 
-## 7. Dataset Validation
+## Interpretation and limitations
 
-The validation script reported:
+- RSSI is a useful received-signal indicator, but it does not alone measure internet throughput, packet loss, latency, or prove that a location has no connectivity.
+- Default dead-zone threshold is **mean RSSI below -80 dBm**. Calibrate it for the environment and intended use.
+- Signal categories are heuristic: Excellent ≥ -50 dBm, Good ≥ -60 dBm, Fair ≥ -67 dBm, Weak ≥ -75 dBm, Very weak < -75 dBm.
+- Windows `netsh` generally reports signal percentage rather than raw RSSI. The app labels its conversion as an estimate; use measured RSSI when available.
+- The interpolation surface is an estimated guide between measured locations. Do not present it as directly measured coverage.
+- The included dataset is a small example dataset. For a meaningful evaluation, take repeated readings at more positions, at consistent intervals, and record the conditions under which each sample was collected.
 
-- 25 data rows across 5 locations
-- 5 readings per location
-- No exact duplicate rows
-- No missing required fields or invalid values detected
+## Project modules
 
-The dataset contains 20 readings on 2.4 GHz, channel 13, and 5 readings on 5 GHz, channel 40. This variation should be considered during further analysis.
+- `app.py` — dashboard and user interaction
+- `analysis_core.py` — reusable, testable data cleaning and analysis logic
+- `wifi_collector.py` — command-line measurement collection
+- `validate_data.py` — data validation utility
+- `analyze_data.py` — statistical summary utility
+- `detect_dead_zones.py` — command-line dead-zone analysis utility
+- `generate_report.py` — existing report utility
+- `tests/` — automated unit tests
 
-## 8. Limitations
 
-- RSSI fluctuates due to environmental conditions and device behaviour.
-- Location coordinates must represent the actual measurement positions.
-- Signal percentage and RSSI may not provide identical information.
-- Receive and transmit link rates do not directly measure actual internet throughput.
-- RSSI alone is insufficient to establish a Wi-Fi dead zone.
-- The initial dataset is small and requires additional measurements for stronger conclusions.
+## Dark interface and presentation guide
 
-## 9. Team Handoff
+The app uses a dark navy theme with teal accents. At the top of the dashboard, expand **How to explain Wi-Fi Quality Mapping during your project review** for a concise walkthrough. Each tab also includes a short explanation of how to interpret the map, diagnostics, measurements, or report.
 
-The validated measurement CSV can be used by the mapping module to visualize Wi-Fi quality across locations. The summary and raw readings can also support the dead-zone detection module, which should define and evaluate its detection criteria.
+## What the metrics mean
 
-Testing, integration, final evaluation, documentation review, and presentation are shared responsibilities of all team members.
+- **Mean RSSI:** average signal power across readings at one location; values closer to 0 dBm are stronger.
+- **Minimum / maximum RSSI:** weakest and strongest recorded readings at that location.
+- **Standard deviation:** spread of readings; larger values indicate more variability.
+- **Dead-zone threshold:** a user-selected cutoff. A location is flagged when its mean RSSI is below the cutoff. This is a potential weak-coverage flag, not proof of no connectivity.
+- **Coverage surface:** inverse-distance-weighted interpolation between measured points. It is an estimate, not additional observed data.
+
+For a defensible demonstration, collect multiple readings at each position under similar conditions and include more spatial points than the small example dataset.
