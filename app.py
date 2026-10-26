@@ -1,442 +1,238 @@
 from pathlib import Path
 from datetime import datetime
-import platform
-import subprocess
-import re
-
+import subprocess, platform, re, io
 import pandas as pd
 import streamlit as st
 import plotly.express as px
+import plotly.graph_objects as go
+from analysis_core import clean_measurements, summarize_locations, classify_signal, idw_grid
 
-st.set_page_config(
-    page_title="Wi-Fi Quality Studio",
-    page_icon="📶",
-    layout="wide",
-    initial_sidebar_state="expanded",
-)
-
-PROJECT_DIR = Path(__file__).resolve().parent
-DATA_DIR = PROJECT_DIR / "data"
-MEASUREMENTS_FILE = DATA_DIR / "wifi_measurements.csv"
-DEAD_ZONE_FILE = DATA_DIR / "dead_zone_results.csv"
-DEAD_ZONE_THRESHOLD = -80
+st.set_page_config(page_title="Wi-Fi Quality Mapping", page_icon="📶", layout="wide", initial_sidebar_state="expanded")
+ROOT = Path(__file__).resolve().parent
+DATA = ROOT / "data"
+CSV = DATA / "wifi_measurements.csv"
+DATA.mkdir(exist_ok=True)
 
 st.markdown("""
 <style>
-.block-container {padding-top: 1.2rem; padding-bottom: 2rem}
-.hero {
-  padding: 1.35rem 1.6rem; border-radius: 18px;
-  background: linear-gradient(115deg, #102a43, #176b87);
-  color: white; margin-bottom: 1rem;
-}
-.hero h1 {color: white; margin: 0 0 .3rem 0; font-size: 2rem}
-.hero p {color: #e8f4f8; margin: 0}
-div[data-testid="stMetric"] {
-  background: rgba(128,128,128,.07); border: 1px solid rgba(128,128,128,.18);
-  padding: 12px 14px; border-radius: 12px;
-}
-.small-note {font-size: .88rem; opacity: .8}
+@import url('https://fonts.googleapis.com/css2?family=DM+Sans:wght@400;500;600;700&family=Space+Grotesk:wght@500;600;700&display=swap');
+:root{--bg:#070d18;--panel:#101a2b;--panel2:#142238;--ink:#edf4ff;--muted:#9aabc4;--teal:#55e0d0;--line:#263650;}
+html,body,[class*="css"]{font-family:'DM Sans',sans-serif;color:var(--ink)}
+.stApp,[data-testid="stAppViewContainer"],[data-testid="stHeader"]{background:#070d18;color:var(--ink)}
+[data-testid="stHeader"]{background:rgba(7,13,24,.92)}
+[data-testid="stSidebar"],section[data-testid="stSidebar"]>div{background:#0b1423;color:var(--ink);border-right:1px solid #1f3049}
+.block-container{padding-top:1.35rem;padding-bottom:2.4rem;max-width:1600px}
+h1,h2,h3,h4,p,li,label,.stMarkdown{color:var(--ink)}
+small,.stCaption,[data-testid="stCaptionContainer"]{color:#9aabc4!important}
+.hero{background:radial-gradient(circle at 85% 10%,#155e75 0%,transparent 33%),linear-gradient(120deg,#111a2d 0%,#132b45 55%,#075b63 100%);border:1px solid #29415c;border-radius:22px;padding:30px 34px;color:#fff;margin-bottom:20px;position:relative;overflow:hidden;box-shadow:0 18px 50px #0005}
+.hero h1{color:white;font-size:2.15rem;margin:0 0 8px 0;letter-spacing:-.04em}.hero p{color:#c4d8ed;margin:0;font-size:1rem;max-width:850px}
+.eyebrow{font-size:.72rem;text-transform:uppercase;letter-spacing:.16em;font-weight:700;color:#72f1df;margin-bottom:8px}
+.pill{display:inline-block;border:1px solid #5b8295;border-radius:99px;padding:6px 11px;margin-top:18px;font-size:.78rem;color:#e6f5f8;background:#ffffff08}
+.section-kicker{font-size:.75rem;font-weight:700;letter-spacing:.12em;text-transform:uppercase;color:#63dfd0;margin-bottom:4px}
+[data-testid="stMetric"]{background:linear-gradient(145deg,#111d30,#0d1727);border:1px solid #263850;border-radius:15px;padding:15px 16px;box-shadow:0 8px 22px #0002}
+[data-testid="stMetricLabel"]{color:#a8bad1;font-weight:600}[data-testid="stMetricValue"]{color:#f2f7ff;font-family:'Space Grotesk',sans-serif}[data-testid="stMetricDelta"]{color:#63dfd0}
+[data-testid="stTabs"]{background:transparent}[data-testid="stTabs"] button{font-weight:600;color:#9eafc7}[data-testid="stTabs"] button[aria-selected="true"]{color:#72f1df;border-bottom-color:#55e0d0}
+[data-testid="stDataFrame"]{border:1px solid #263850;border-radius:12px;overflow:hidden}
+.note{background:#102638;border:1px solid #245064;border-left:3px solid #55e0d0;padding:13px 15px;border-radius:8px;color:#d6e8f6;font-size:.9rem;line-height:1.55}
+.guide-card{background:linear-gradient(120deg,#101d30,#102637);border:1px solid #29415b;border-radius:14px;padding:16px 18px;margin:10px 0 18px;color:#dce9f7;line-height:1.6}
+.guide-card b{color:#73e9da}.mini-label{color:#8ea5c1;text-transform:uppercase;letter-spacing:.1em;font-size:.68rem;font-weight:700}
+div[data-testid="stExpander"]{border:1px solid #263850;border-radius:12px;background:#0c1626}
+div[data-testid="stExpander"] summary{color:#e8f1ff}
+.stButton>button,.stDownloadButton>button{border-radius:9px;border:1px solid #35516c;background:#14283e;color:#eaf6ff;font-weight:600}
+.stButton>button[kind="primary"],.stDownloadButton>button[kind="primary"]{background:#0e766f;border-color:#1ca99e;color:white}
+.stTextInput input,.stNumberInput input,.stSelectbox div[data-baseweb="select"],.stMultiSelect div[data-baseweb="select"],.stTextArea textarea{background:#0c1727!important;color:#eef6ff!important;border-color:#2a405b!important}
+[data-baseweb="popover"]{background:#101a2b}
+hr{border-color:#263850!important}
 </style>
 """, unsafe_allow_html=True)
 
-st.markdown("""
-<div class="hero">
-  <h1>📶 Wi-Fi Quality Studio</h1>
-  <p>Explore coverage · compare locations · collect readings · identify weak-signal areas</p>
-</div>
-""", unsafe_allow_html=True)
+
+def scan_wifi():
+    if platform.system() != "Windows": raise RuntimeError("Live Wi-Fi scan is supported on Windows using netsh.")
+    res = subprocess.run(["netsh", "wlan", "show", "interfaces"], capture_output=True, text=True, encoding="utf-8", errors="replace", timeout=10)
+    out = res.stdout
+    def get(pattern):
+        m = re.search(pattern, out, re.I | re.M); return m.group(1).strip() if m else ""
+    ssid = get(r"^\s*SSID\s*:\s*(.+)$"); signal = get(r"^\s*Signal\s*:\s*(\d+)\s*%")
+    channel = get(r"^\s*Channel\s*:\s*(\d+)"); state = get(r"^\s*State\s*:\s*(.+)$")
+    rx = get(r"^\s*Receive rate \(Mbps\)\s*:\s*([\d.]+)"); tx = get(r"^\s*Transmit rate \(Mbps\)\s*:\s*([\d.]+)")
+    radio = get(r"^\s*Radio type\s*:\s*(.+)$")
+    if res.returncode or not ssid or state.lower() == "disconnected": raise RuntimeError("No connected Wi-Fi interface was found. Connect to Wi-Fi and retry.")
+    pct = int(signal) if signal else None; ch = int(channel) if channel else None
+    # This estimate is illustrative only; Windows signal percentage is not raw RSSI.
+    est = round(pct / 2 - 100) if pct is not None else -60
+    return {"ssid":ssid,"signal_percent":pct,"channel":ch,"band":"2.4 GHz" if ch and ch <= 14 else ("5 GHz" if ch else "Unknown"),"receive_rate_mbps":float(rx) if rx else None,"transmit_rate_mbps":float(tx) if tx else None,"radio_type":radio,"estimated_rssi":est}
 
 
-def scan_current_wifi():
-    """Read connected Wi-Fi details from Windows; RSSI is an estimate from signal percentage."""
-    if platform.system() != "Windows":
-        raise RuntimeError("Automatic Wi-Fi scanning currently supports Windows only.")
-    result = subprocess.run(
-        ["netsh", "wlan", "show", "interfaces"],
-        capture_output=True, text=True, encoding="utf-8", errors="replace", timeout=10
-    )
-    output = result.stdout
-    if result.returncode != 0 or not output.strip():
-        raise RuntimeError(result.stderr.strip() or "Windows returned no Wi-Fi interface details.")
+def load_data():
+    if not CSV.exists():
+        pd.DataFrame(columns=["timestamp","location_id","x_m","y_m","ssid","rssi_dbm","signal_percent","band","channel","receive_rate_mbps","transmit_rate_mbps"]).to_csv(CSV,index=False)
+    raw = pd.read_csv(CSV)
+    return raw, clean_measurements(raw)
 
-    def field(pattern):
-        match = re.search(pattern, output, re.IGNORECASE | re.MULTILINE)
-        return match.group(1).strip() if match else ""
+raw, measurements = load_data()
+threshold = -80  # Default threshold; adjustable in the sidebar.
+summary = summarize_locations(measurements, threshold)
 
-    ssid = field(r"^\s*SSID\s*:\s*(.+)$")
-    signal = field(r"^\s*Signal\s*:\s*(\d+)\s*%")
-    channel = field(r"^\s*Channel\s*:\s*(\d+)")
-    radio = field(r"^\s*Radio type\s*:\s*(.+)$")
-    receive = field(r"^\s*Receive rate \(Mbps\)\s*:\s*(\d+(?:\.\d+)?)")
-    transmit = field(r"^\s*Transmit rate \(Mbps\)\s*:\s*(\d+(?:\.\d+)?)")
-    state = field(r"^\s*State\s*:\s*(.+)$")
-    if not ssid or state.lower() == "disconnected":
-        raise RuntimeError("No connected Wi-Fi network found. Connect to Wi-Fi and scan again.")
+st.markdown("""<div class="hero"><div class="eyebrow">WIRELESS NETWORK INTELLIGENCE</div><h1>Wi-Fi Quality Mapping</h1><p>Map signal quality. Diagnose weak coverage. Turn measurements into network decisions.</p><span class="pill">● LOCAL ANALYSIS &nbsp;·&nbsp; RSSI-BASED DIAGNOSTICS &nbsp;·&nbsp; CSV EXPORT</span></div>""", unsafe_allow_html=True)
+with st.expander("How to explain Wi-Fi Quality Mapping during your project review", expanded=False):
+    st.markdown("""<div class="guide-card"><div class="mini-label">Project in one sentence</div><b>Wi-Fi Quality Mapping turns signal measurements at known positions into a coverage view and clear weak-signal diagnostics.</b><br><br><b>1 · Measure:</b> readings are associated with a location ID and X/Y coordinates in metres.<br><b>2 · Summarize:</b> the app calculates mean, minimum, maximum and standard deviation of RSSI per location.<br><b>3 · Diagnose:</b> adjust the threshold in the sidebar; a location is flagged when its mean RSSI is below the selected value.<br><b>4 · Visualize:</b> markers show measured locations; the shaded surface estimates values between them and is not extra measured data.<br><b>5 · Act:</b> use the flags to decide where to repeat measurements or investigate access-point placement and obstructions.</div>""", unsafe_allow_html=True)
+    st.info("Important limitation to state clearly: RSSI indicates received signal power, not internet speed or guaranteed connectivity. The built-in Windows scan reports signal percentage; its converted dBm value is an estimate. The map is only as reliable as the number and placement of measured points.")
 
-    percent = int(signal) if signal else None
-    channel_num = int(channel) if channel else None
-    if channel_num is None:
-        band = "Unknown"
-    elif channel_num <= 14:
-        band = "2.4 GHz"
-    elif channel_num <= 177:
-        band = "5 GHz"
-    else:
-        band = "6 GHz / Unknown"
-    estimated_rssi = round(percent / 2 - 100) if percent is not None else None
-    return {
-        "ssid": ssid, "signal_percent": percent, "channel": channel_num, "band": band,
-        "radio_type": radio or "Not reported",
-        "receive_rate_mbps": float(receive) if receive else None,
-        "transmit_rate_mbps": float(transmit) if transmit else None,
-        "estimated_rssi": estimated_rssi,
-    }
+with st.sidebar:
+    st.markdown("### Workspace")
+    st.caption("Coverage analysis console")
+    st.markdown("**Dead-zone detection**")
+    threshold = st.slider("Weak-signal threshold (dBm)", min_value=-95, max_value=-55, value=-80, step=1, help="Locations with an average RSSI below this value are flagged as potential dead zones. A threshold closer to 0 is stricter and flags more locations; a more negative threshold flags fewer.")
+    st.caption(f"Selected threshold: {threshold} dBm. Locations averaging below this level are flagged for review.")
+    st.divider()
+    all_locs = sorted(summary.location_id.astype(str).unique().tolist()) if not summary.empty else []
+    selected = st.multiselect("Locations in view", all_locs, default=all_locs)
+    show_interpolation = st.toggle("Show estimated coverage surface", value=True, help="Interpolated surface is a visual estimate between measurement points, not additional measured data.")
+    st.divider()
+    st.markdown("**Signal guide**")
+    st.markdown("🟢 Excellent / Good · −60 dBm and above  \n🟡 Fair · −61 to −67 dBm  \n🟠 Weak · −68 to −75 dBm  \n🔴 Very weak · below −75 dBm")
 
+summary = summarize_locations(measurements, threshold)
+view = summary[summary.location_id.isin(selected)].copy() if selected else summary.iloc[0:0]
 
-def load_measurements():
-    if not MEASUREMENTS_FILE.exists():
-        return pd.DataFrame()
-    data = pd.read_csv(MEASUREMENTS_FILE)
-    required = [
-        "timestamp", "location_id", "x_m", "y_m", "ssid", "rssi_dbm",
-        "signal_percent", "band", "channel", "receive_rate_mbps", "transmit_rate_mbps"
-    ]
-    for col in required:
-        if col not in data.columns:
-            data[col] = pd.NA
-    for col in ["x_m", "y_m", "rssi_dbm", "signal_percent", "channel",
-                "receive_rate_mbps", "transmit_rate_mbps"]:
-        data[col] = pd.to_numeric(data[col], errors="coerce")
-    data["location_id"] = data["location_id"].astype("string").str.strip().str.upper()
-    data = data.dropna(subset=["location_id", "x_m", "y_m", "rssi_dbm"])
-    return data[data["location_id"] != ""].copy()
-
-
-def classify_signal(rssi):
-    if rssi >= -50:
-        return "Strong"
-    if rssi >= -60:
-        return "Moderate"
-    if rssi >= -70:
-        return "Weak"
-    return "Very Weak"
-
-
-def build_summary(data):
-    if data.empty:
-        return pd.DataFrame()
-    summary = data.groupby("location_id", as_index=False).agg(
-        x_m=("x_m", "mean"),
-        y_m=("y_m", "mean"),
-        rssi_dbm=("rssi_dbm", "mean"),
-        min_rssi=("rssi_dbm", "min"),
-        max_rssi=("rssi_dbm", "max"),
-        readings=("rssi_dbm", "size"),
-    )
-    summary["signal_quality"] = summary["rssi_dbm"].apply(classify_signal)
-    summary["status"] = summary["rssi_dbm"].apply(
-        lambda value: "Potential Dead Zone" if value < DEAD_ZONE_THRESHOLD else "Not flagged by RSSI threshold"
-    )
-    if DEAD_ZONE_FILE.exists():
-        try:
-            dz = pd.read_csv(DEAD_ZONE_FILE)
-            if {"location_id", "status"}.issubset(dz.columns):
-                dz["location_id"] = dz["location_id"].astype(str).str.strip().str.upper()
-                cols = [c for c in ["location_id", "dead_zone", "status"] if c in dz.columns]
-                # The latest detector output, when available, takes precedence.
-                summary = summary.drop(columns=["status"]).merge(dz[cols], on="location_id", how="left")
-                summary["status"] = summary["status"].fillna(
-                    summary["rssi_dbm"].apply(
-                        lambda value: "Potential Dead Zone" if value < DEAD_ZONE_THRESHOLD else "Not flagged by RSSI threshold"
-                    )
-                )
-        except Exception:
-            pass
-    return summary
-
-
-if not MEASUREMENTS_FILE.exists():
-    st.error(f"Measurements file not found: {MEASUREMENTS_FILE}")
-    st.info("Place your existing wifi_measurements.csv inside the project's data folder.")
-    st.stop()
-
-try:
-    measurements = load_measurements()
-except Exception as exc:
-    st.error(f"Could not read the measurements CSV: {exc}")
-    st.stop()
+# Add reading form
+with st.expander("＋ Add a measurement", expanded=False):
+    st.caption("Scan retrieves Windows-reported details. The RSSI populated from signal percentage is only an estimate; manually measured values can be entered instead.")
+    if st.button("Scan connected Wi-Fi", type="secondary"):
+        try: st.session_state["wifi_scan"] = scan_wifi(); st.session_state.pop("wifi_scan_error",None)
+        except Exception as e: st.session_state["wifi_scan_error"] = str(e)
+    if st.session_state.get("wifi_scan_error"): st.error(st.session_state["wifi_scan_error"])
+    scan = st.session_state.get("wifi_scan", {})
+    if scan: st.info(f"Network: {scan['ssid']} · Signal: {scan['signal_percent']}% · Channel: {scan['channel']} · Band: {scan['band']} · Estimated RSSI: {scan['estimated_rssi']} dBm")
+    with st.form("measurement_form", clear_on_submit=True):
+        a,b,c = st.columns(3)
+        loc = a.text_input("Location ID", placeholder="e.g. LAB-06")
+        x = b.number_input("X position (m)", value=0.0, step=.5)
+        y = c.number_input("Y position (m)", value=0.0, step=.5)
+        d,e,f = st.columns(3)
+        rssi = d.number_input("RSSI (dBm)", min_value=-127, max_value=0, value=int(scan.get("estimated_rssi",-60)), step=1)
+        ssid = e.text_input("SSID", value=scan.get("ssid",""))
+        band = f.selectbox("Band", ["2.4 GHz","5 GHz","6 GHz","Unknown"], index=["2.4 GHz","5 GHz","6 GHz","Unknown"].index(scan.get("band","Unknown")))
+        g,h,i = st.columns(3)
+        channel = g.number_input("Channel", min_value=0,max_value=233,value=int(scan.get("channel") or 0),step=1)
+        pct = h.number_input("Signal (%)",min_value=0,max_value=100,value=int(scan.get("signal_percent") or 0),step=1)
+        rx = i.number_input("Receive rate (Mbps)",min_value=0.0,value=float(scan.get("receive_rate_mbps") or 0),step=1.0)
+        save = st.form_submit_button("Save measurement", type="primary")
+    if save:
+        if not loc.strip(): st.error("Enter a location ID.")
+        else:
+            record = {"timestamp":datetime.now().astimezone().isoformat(timespec="seconds"),"location_id":loc.strip().upper(),"x_m":x,"y_m":y,"ssid":ssid,"rssi_dbm":rssi,"signal_percent":pct or pd.NA,"band":band,"channel":channel or pd.NA,"receive_rate_mbps":rx or pd.NA,"transmit_rate_mbps":scan.get("transmit_rate_mbps") or pd.NA}
+            combined = pd.concat([raw,pd.DataFrame([record])],ignore_index=True); combined.to_csv(CSV,index=False)
+            st.success("Measurement saved. The dashboard will refresh."); st.rerun()
 
 if measurements.empty:
-    st.warning("No valid readings with location coordinates and RSSI were found.")
+    st.warning("No valid measurements yet. Add a measurement or check data/wifi_measurements.csv.")
     st.stop()
 
-# Sidebar controls
-summary_all = build_summary(measurements)
-st.sidebar.header("🔎 Explore the data")
-all_locations = sorted(summary_all["location_id"].astype(str).unique().tolist())
-selected_locations = st.sidebar.multiselect("Locations", all_locations, default=all_locations)
-quality_options = ["Strong", "Moderate", "Weak", "Very Weak"]
-selected_quality = st.sidebar.multiselect("Signal quality", quality_options, default=quality_options)
-available_bands = sorted([str(x) for x in measurements["band"].dropna().unique() if str(x).strip()])
-selected_bands = st.sidebar.multiselect("Wi-Fi band", available_bands, default=available_bands)
-st.sidebar.caption("Filters apply to the dashboard summary and charts.")
+# KPIs
+loc_count = len(view); count = int(view.readings.sum()) if loc_count else 0
+avg = view.mean_rssi_dbm.mean() if loc_count else float("nan")
+weak_count = int((view.mean_rssi_dbm < -67).sum()) if loc_count else 0
+dead_count = int((view.mean_rssi_dbm < threshold).sum()) if loc_count else 0
+strongest = view.loc[view.mean_rssi_dbm.idxmax()] if loc_count else None
+k1,k2,k3,k4,k5 = st.columns(5)
+k1.metric("Mapped locations",f"{loc_count}",help="Unique location IDs in current filter")
+k2.metric("Valid readings",f"{count}")
+k3.metric("Mean signal",f"{avg:.1f} dBm" if loc_count else "—")
+k4.metric("Weak locations",f"{weak_count}",help="Mean RSSI below −67 dBm")
+k5.metric("Potential dead zones",f"{dead_count}",help=f"Mean RSSI below selected threshold ({threshold} dBm)")
 
-filtered_data = measurements[measurements["location_id"].isin(selected_locations)].copy()
-if selected_bands:
-    filtered_data = filtered_data[filtered_data["band"].astype(str).isin(selected_bands)]
-elif available_bands:
-    filtered_data = filtered_data.iloc[0:0]
-summary = build_summary(filtered_data)
-if selected_quality:
-    summary = summary[summary["signal_quality"].isin(selected_quality)].copy()
-else:
-    summary = summary.iloc[0:0]
-filtered_data = filtered_data[filtered_data["location_id"].isin(summary["location_id"])]
+st.markdown("<div style='height:8px'></div>",unsafe_allow_html=True)
+tab_map, tab_diag, tab_data, tab_report = st.tabs(["🗺 Coverage map","◈ Diagnostics","▤ Measurements","⇩ Reports & methodology"])
 
-# Add-reading workflow
-with st.expander("➕ Add a new Wi-Fi reading", expanded=False):
-    st.write("Scan the connected Wi-Fi network if desired, then confirm the location and save the reading.")
-    scan_col, info_col = st.columns([1, 2])
-    with scan_col:
-        if st.button("📡 Scan current Wi-Fi", type="primary", use_container_width=True):
-            try:
-                found = scan_current_wifi()
-                st.session_state["wifi_scan"] = found
-                st.session_state["wifi_scan_error"] = ""
-            except Exception as exc:
-                st.session_state["wifi_scan_error"] = str(exc)
-    with info_col:
-        st.caption("Uses Windows netsh. The RSSI derived from signal percentage is only an estimate, not a direct RSSI reading.")
-    if st.session_state.get("wifi_scan_error"):
-        st.error(st.session_state["wifi_scan_error"])
-    scan = st.session_state.get("wifi_scan")
-    if scan:
-        st.success(f"Connected network detected: {scan['ssid']}")
-        st.write(
-            f"Signal: {scan['signal_percent'] if scan['signal_percent'] is not None else 'Unknown'}% · "
-            f"Band: {scan['band']} · Channel: {scan['channel'] if scan['channel'] is not None else 'Unknown'} · "
-            f"Radio: {scan['radio_type']}"
-        )
-        st.caption("Receive/transmit rates may not be exposed by Windows on every device.")
-    with st.form("add_wifi_reading", clear_on_submit=True):
-        left, middle, right = st.columns(3)
-        with left:
-            new_location = st.text_input("Location ID", placeholder="e.g. P6")
-            new_x = st.number_input("X coordinate (m)", value=0.0, step=0.5, format="%.2f")
-        with middle:
-            new_y = st.number_input("Y coordinate (m)", value=0.0, step=0.5, format="%.2f")
-            scan_rssi = scan.get("estimated_rssi") if scan and scan.get("estimated_rssi") is not None else -60
-            new_rssi = st.number_input("RSSI (dBm)", min_value=-100, max_value=0, value=int(scan_rssi), step=1)
-        with right:
-            new_ssid = st.text_input("SSID", value=scan["ssid"] if scan else "")
-            band_options = ["2.4 GHz", "5 GHz", "6 GHz", "Unknown"]
-            scan_band = scan.get("band", "Unknown") if scan else "Unknown"
-            band_index = band_options.index(scan_band) if scan_band in band_options else 3
-            new_band = st.selectbox("Band", band_options, index=band_index)
-        col_a, col_b, col_c = st.columns(3)
-        with col_a:
-            scan_channel = scan.get("channel") if scan else None
-            new_channel = st.number_input("Channel (0 = unknown)", min_value=0, max_value=233,
-                                          value=int(scan_channel or 0), step=1)
-        with col_b:
-            scan_percent = scan.get("signal_percent") if scan else None
-            new_percent = st.number_input("Signal % (0 = unknown)", min_value=0, max_value=100,
-                                          value=int(scan_percent or 0), step=1)
-        with col_c:
-            st.caption("Optional link rates are retained when available; leave unknown values blank in the saved CSV.")
-        save = st.form_submit_button("💾 Save reading", type="primary", use_container_width=True)
-    if save:
-        clean_id = new_location.strip().upper()
-        if not clean_id:
-            st.error("Enter a location ID, such as P6.")
-        else:
-            row = {
-                "timestamp": datetime.now().astimezone().isoformat(timespec="seconds"),
-                "location_id": clean_id, "x_m": float(new_x), "y_m": float(new_y),
-                "ssid": new_ssid.strip(), "rssi_dbm": int(new_rssi),
-                "signal_percent": int(new_percent) if new_percent else pd.NA,
-                "band": new_band, "channel": int(new_channel) if new_channel else pd.NA,
-                "receive_rate_mbps": scan.get("receive_rate_mbps") if scan else pd.NA,
-                "transmit_rate_mbps": scan.get("transmit_rate_mbps") if scan else pd.NA,
-            }
-            try:
-                original = pd.read_csv(MEASUREMENTS_FILE)
-                for col in row:
-                    if col not in original.columns:
-                        original[col] = pd.NA
-                original = pd.concat([original, pd.DataFrame([row])], ignore_index=True)
-                original.to_csv(MEASUREMENTS_FILE, index=False)
-                st.success(f"Saved one reading for {clean_id}. The dashboard will refresh now.")
-                st.rerun()
-            except PermissionError:
-                st.error("Windows could not write the CSV. Close it in Excel if it is open, then retry.")
-            except Exception as exc:
-                st.error(f"Could not save the reading: {exc}")
-
-# Reload after possible write and prepare selected view
-measurements = load_measurements()
-summary_all = build_summary(measurements)
-filtered_data = measurements[measurements["location_id"].isin(selected_locations)].copy()
-if selected_bands:
-    filtered_data = filtered_data[filtered_data["band"].astype(str).isin(selected_bands)]
-elif available_bands:
-    filtered_data = filtered_data.iloc[0:0]
-summary = build_summary(filtered_data)
-summary = summary[summary["signal_quality"].isin(selected_quality)] if selected_quality else summary.iloc[0:0]
-filtered_data = filtered_data[filtered_data["location_id"].isin(summary["location_id"])]
-
-if summary.empty:
-    st.warning("No locations match the current filters. Change the filters in the sidebar.")
-    st.stop()
-
-# KPI cards
-strongest = summary.loc[summary["rssi_dbm"].idxmax()]
-weakest = summary.loc[summary["rssi_dbm"].idxmin()]
-dead_count = int((summary["rssi_dbm"] < DEAD_ZONE_THRESHOLD).sum())
-k1, k2, k3, k4, k5 = st.columns(5)
-k1.metric("Locations", len(summary))
-k2.metric("Readings", len(filtered_data))
-k3.metric("Average RSSI", f"{filtered_data['rssi_dbm'].mean():.1f} dBm")
-k4.metric("Strongest location", str(strongest["location_id"]), f"{strongest['rssi_dbm']:.1f} dBm")
-k5.metric("Below −80 dBm", dead_count)
-
-tab_overview, tab_compare, tab_details, tab_data, tab_about = st.tabs(
-    ["📊 Overview", "⚖️ Compare locations", "📍 Location explorer", "🧾 Data & export", "ℹ️ Methodology"]
-)
-
-with tab_overview:
-    st.subheader("Coverage map")
-    st.caption("Points show measured locations. Coordinates are the project's estimated indoor layout, not GPS. Heat between points is not measured directly.")
-    map_fig = px.scatter(
-        summary, x="x_m", y="y_m", color="rssi_dbm", size="readings",
-        hover_name="location_id",
-        hover_data={"rssi_dbm":":.1f", "signal_quality":True, "status":True,
-                    "readings":True, "x_m":":.2f", "y_m":":.2f"},
-        color_continuous_scale="RdYlGn", range_color=[-80, -40],
-        labels={"x_m":"X coordinate (m)", "y_m":"Y coordinate (m)", "rssi_dbm":"Mean RSSI (dBm)"},
-        title="Measured Wi-Fi signal by location",
-    )
-    map_fig.update_traces(marker=dict(line=dict(width=1, color="black")))
-    map_fig.update_layout(height=440, margin=dict(l=10,r=10,t=55,b=10))
-    st.plotly_chart(map_fig, use_container_width=True)
-
-    left, right = st.columns(2)
+with tab_map:
+    st.markdown("<div class='guide-card'><b>How to read this map:</b> each labeled circle is a measured location. Hover to inspect its mean RSSI and sample count. The color surface is an inverse-distance-weighted estimate between points, so it is a visual guide rather than a direct measurement.</div>", unsafe_allow_html=True)
+    left,right = st.columns([1.65,1],gap="large")
     with left:
-        st.subheader("Average RSSI by location")
-        bar = px.bar(summary.sort_values("rssi_dbm"), x="rssi_dbm", y="location_id",
-                     orientation="h", color="rssi_dbm", color_continuous_scale="RdYlGn",
-                     range_color=[-80, -40], text_auto=".1f",
-                     labels={"rssi_dbm":"Mean RSSI (dBm)", "location_id":"Location"})
-        bar.add_vline(x=DEAD_ZONE_THRESHOLD, line_dash="dash",
-                      annotation_text="−80 dBm reference")
-        bar.update_layout(height=370, coloraxis_showscale=False, margin=dict(l=10,r=10,t=20,b=10))
-        st.plotly_chart(bar, use_container_width=True)
+        st.markdown('<div class="section-kicker">Spatial intelligence</div><h3>Signal coverage plane</h3>',unsafe_allow_html=True)
+        fig = go.Figure()
+        if show_interpolation:
+            grid = idw_grid(view, 65) if len(view) >= 3 else None
+            if grid:
+                gx,gy,z = grid
+                fig.add_trace(go.Heatmap(x=gx,y=gy,z=z,colorscale=[[0,"#b91c1c"],[.25,"#f97316"],[.5,"#facc15"],[.75,"#34d399"],[1,"#047857"]],zmin=-85,zmax=-45,opacity=.62,colorbar=dict(title="Estimated<br>dBm",thickness=12),hovertemplate="X %{x:.1f} m<br>Y %{y:.1f} m<br>Interpolated %{z:.1f} dBm<extra></extra>"))
+        color_map = {"Excellent":"#047857","Good":"#10b981","Fair":"#facc15","Weak":"#f97316","Very weak":"#b91c1c","Insufficient data":"#64748b"}
+        if not view.empty:
+            for _, row in view.iterrows():
+                fig.add_trace(go.Scatter(x=[row.x_m],y=[row.y_m],mode="markers+text",text=[str(row.location_id)],textposition="top center",name=str(row.location_id),marker=dict(size=17,line=dict(width=2,color="white"),color=color_map.get(row.signal_quality,"#64748b")),customdata=[[row.mean_rssi_dbm,row.signal_quality,int(row.readings),row.status,row.min_rssi_dbm,row.max_rssi_dbm]],hovertemplate="<b>%{text}</b><br>X: %{x:.2f} m<br>Y: %{y:.2f} m<br>Mean: %{customdata[0]:.1f} dBm<br>Quality: %{customdata[1]}<br>Readings: %{customdata[2]}<br>Status: %{customdata[3]}<br>Range: %{customdata[4]:.0f} to %{customdata[5]:.0f} dBm<extra></extra>"))
+        fig.update_layout(height=510,margin=dict(l=10,r=10,t=10,b=10),paper_bgcolor="#0d1727",plot_bgcolor="#0d1727",legend=dict(orientation="h",y=-.12),xaxis_title="X position (metres)",yaxis_title="Y position (metres)",yaxis=dict(scaleanchor="x",scaleratio=1,gridcolor="#263850",zerolinecolor="#263850"),xaxis=dict(gridcolor="#263850",zerolinecolor="#263850"),font=dict(family="DM Sans",color="#d9e7f7"))
+        st.plotly_chart(fig,use_container_width=True)
+        st.caption("Measured points are shown as markers. The colored surface is inverse-distance-weighted interpolation between locations and must not be interpreted as additional measurements.")
     with right:
-        st.subheader("Signal quality distribution")
-        quality_counts = summary["signal_quality"].value_counts().reindex(quality_options, fill_value=0).reset_index()
-        quality_counts.columns = ["Signal quality", "Locations"]
-        pie = px.pie(quality_counts, names="Signal quality", values="Locations",
-                     hole=.48, title="Locations by average signal quality")
-        pie.update_layout(height=370, margin=dict(l=10,r=10,t=50,b=10))
-        st.plotly_chart(pie, use_container_width=True)
+        st.markdown('<div class="section-kicker">Coverage ranking</div><h3>Location performance</h3>',unsafe_allow_html=True)
+        rank = view.sort_values("mean_rssi_dbm",ascending=True)
+        bar = px.bar(rank,x="mean_rssi_dbm",y="location_id",orientation="h",color="mean_rssi_dbm",range_color=[-85,-45],color_continuous_scale=["#b91c1c","#f97316","#facc15","#10b981","#047857"],labels={"mean_rssi_dbm":"Mean RSSI (dBm)","location_id":"Location"},hover_data={"readings":True,"std_dev_db":":.2f"})
+        bar.add_vline(x=threshold,line_dash="dash",line_color="#b91c1c",annotation_text=f"Threshold {threshold} dBm")
+        bar.update_layout(height=380,margin=dict(l=5,r=5,t=10,b=10),coloraxis_showscale=False,showlegend=False,paper_bgcolor="#0d1727",plot_bgcolor="#0d1727",font=dict(family="DM Sans",color="#d9e7f7"),xaxis=dict(gridcolor="#263850",zerolinecolor="#263850",color="#d9e7f7"),yaxis=dict(color="#d9e7f7"))
+        st.plotly_chart(bar,use_container_width=True)
+        if strongest is not None: st.markdown(f"<div class='note'><b>Best measured location: {strongest.location_id}</b><br>{strongest.mean_rssi_dbm:.1f} dBm mean RSSI across {int(strongest.readings)} reading(s). This is the strongest location in the current filtered dataset.</div>",unsafe_allow_html=True)
+    st.markdown("### Quality distribution")
+    quality_counts = view.signal_quality.value_counts().reindex(["Excellent","Good","Fair","Weak","Very weak"],fill_value=0).reset_index()
+    quality_counts.columns=["Signal quality","Locations"]
+    qfig=px.bar(quality_counts,x="Signal quality",y="Locations",color="Signal quality",color_discrete_map={"Excellent":"#047857","Good":"#10b981","Fair":"#facc15","Weak":"#f97316","Very weak":"#b91c1c"})
+    qfig.update_layout(height=260,margin=dict(l=5,r=5,t=10,b=5),showlegend=False,paper_bgcolor="#0d1727",plot_bgcolor="#0d1727",font=dict(family="DM Sans",color="#d9e7f7"),xaxis=dict(gridcolor="#263850",color="#d9e7f7"),yaxis=dict(gridcolor="#263850",color="#d9e7f7"))
+    st.plotly_chart(qfig,use_container_width=True)
 
-    st.subheader("Quick interpretation")
-    if dead_count:
-        st.error(f"{dead_count} displayed location(s) have mean RSSI below −80 dBm. Inspect these areas and collect repeat readings.")
+with tab_diag:
+    st.markdown("<div class='guide-card'><b>What this page proves:</b> it compares a threshold rule with observed variation. Mean RSSI reduces the influence of one unusually low sample, while the minimum reading helps reveal intermittent drops. Treat flags as investigation prompts, not proof of zero connectivity.</div>", unsafe_allow_html=True)
+    st.markdown('<div class="section-kicker">Decision support</div><h3>Coverage diagnostics</h3>',unsafe_allow_html=True)
+    st.caption(f"Classification uses mean RSSI. Potential dead-zone threshold is currently {threshold} dBm. These flags indicate weak measured signal, not proof of no connectivity.")
+    diag=view.copy()
+    if diag.empty: st.info("No locations selected.")
     else:
-        st.success("No displayed location has a mean RSSI below −80 dBm in the current filtered data.")
-    st.info(f"Weakest displayed location: **{weakest['location_id']}** at **{weakest['rssi_dbm']:.1f} dBm**. This is the weakest sampled point, not proof that all nearby areas have the same signal.")
-
-with tab_compare:
-    st.subheader("Compare two or more locations")
-    compare_options = sorted(summary["location_id"].astype(str).unique().tolist())
-    default_compare = compare_options[:min(3, len(compare_options))]
-    chosen_compare = st.multiselect("Choose locations to compare", compare_options, default=default_compare)
-    compare_df = summary[summary["location_id"].isin(chosen_compare)].copy()
-    if compare_df.empty:
-        st.info("Choose at least one location to see the comparison.")
-    else:
-        compare_fig = px.bar(compare_df.sort_values("rssi_dbm"), x="location_id", y="rssi_dbm",
-                             color="signal_quality", text_auto=".1f",
-                             hover_data=["min_rssi", "max_rssi", "readings", "status"],
-                             labels={"location_id":"Location", "rssi_dbm":"Mean RSSI (dBm)",
-                                     "signal_quality":"Signal quality"},
-                             title="Mean signal strength comparison")
-        compare_fig.add_hline(y=DEAD_ZONE_THRESHOLD, line_dash="dash",
-                              annotation_text="Potential dead-zone threshold")
-        compare_fig.update_layout(height=420)
-        st.plotly_chart(compare_fig, use_container_width=True)
-        st.dataframe(compare_df[["location_id","x_m","y_m","readings","min_rssi","rssi_dbm","max_rssi","signal_quality","status"]]
-                     .sort_values("rssi_dbm", ascending=False), use_container_width=True, hide_index=True)
-        if len(compare_df) >= 2:
-            strongest_c = compare_df.loc[compare_df["rssi_dbm"].idxmax()]
-            weakest_c = compare_df.loc[compare_df["rssi_dbm"].idxmin()]
-            st.write(f"**Comparison:** {strongest_c['location_id']} is strongest ({strongest_c['rssi_dbm']:.1f} dBm); "
-                     f"{weakest_c['location_id']} is weakest ({weakest_c['rssi_dbm']:.1f} dBm) among the selected locations.")
-
-with tab_details:
-    st.subheader("Location explorer")
-    detail_locations = sorted(summary["location_id"].astype(str).unique().tolist())
-    chosen = st.selectbox("Select a location", detail_locations, key="location_explorer")
-    row = summary[summary["location_id"] == chosen].iloc[0]
-    raw = filtered_data[filtered_data["location_id"].astype(str).str.upper() == chosen.upper()].copy()
-    a,b,c,d = st.columns(4)
-    a.metric("Mean RSSI", f"{row['rssi_dbm']:.1f} dBm")
-    b.metric("Signal quality", row["signal_quality"])
-    c.metric("Readings", int(row["readings"]))
-    d.metric("Range", f"{row['min_rssi']:.0f} to {row['max_rssi']:.0f} dBm")
-    st.write(f"**Coordinates:** ({row['x_m']:.2f} m, {row['y_m']:.2f} m)")
-    st.write(f"**Status:** {row['status']}")
-    detail_chart = px.line(raw.sort_values("timestamp") if "timestamp" in raw else raw,
-                           y="rssi_dbm", markers=True,
-                           hover_data=[c for c in ["timestamp","ssid","band","channel"] if c in raw],
-                           labels={"rssi_dbm":"RSSI (dBm)", "index":"Reading"},
-                           title=f"Individual readings at {chosen}")
-    detail_chart.add_hline(y=DEAD_ZONE_THRESHOLD, line_dash="dash", annotation_text="−80 dBm reference")
-    detail_chart.update_layout(height=350)
-    st.plotly_chart(detail_chart, use_container_width=True)
-    st.dataframe(raw, use_container_width=True, hide_index=True)
+        diag["status"] = diag.mean_rssi_dbm.apply(lambda v:"Potential dead zone" if v < threshold else ("Weak coverage" if v < -67 else "Coverage acceptable"))
+        diag["Recommendation"] = diag.apply(lambda r: "Repeat measurements; verify connectivity and consider AP placement" if r.mean_rssi_dbm < threshold else ("Check obstruction and compare at different times" if r.mean_rssi_dbm < -67 else "No signal-strength action indicated by this threshold"),axis=1)
+        show=diag[["location_id","mean_rssi_dbm","min_rssi_dbm","max_rssi_dbm","std_dev_db","readings","weak_reading_pct","signal_quality","status","Recommendation"]].copy()
+        show.columns=["Location","Mean (dBm)","Minimum (dBm)","Maximum (dBm)","Std dev (dB)","Readings","Readings below −67 dBm (%)","Quality","Status","Suggested next step"]
+        st.dataframe(show.round(2),use_container_width=True,hide_index=True)
+        unstable=diag[diag.std_dev_db >= 8]
+        if not unstable.empty: st.warning("High variation detected at: " + ", ".join(unstable.location_id.astype(str)) + ". Consider collecting additional readings at consistent intervals.")
+        else: st.success("No location has standard deviation ≥ 8 dB in the current filtered dataset.")
+        st.markdown("#### Method comparison")
+        st.write("The single-reading baseline flags a location if any reading falls below the threshold. The mean-based method flags it only when the average is below the threshold. The mean-based method is less sensitive to isolated outliers, but can hide intermittent drops; both views are useful.")
+        base=measurements[measurements.location_id.isin(selected)].groupby("location_id").agg(mean_rssi=("rssi_dbm","mean"),min_rssi=("rssi_dbm","min"),readings=("rssi_dbm","size")).reset_index()
+        base["Any reading below threshold"] = base.min_rssi < threshold
+        base["Mean below threshold"] = base.mean_rssi < threshold
+        st.dataframe(base.rename(columns={"location_id":"Location","mean_rssi":"Mean RSSI","min_rssi":"Minimum RSSI","readings":"Samples"}),use_container_width=True,hide_index=True)
 
 with tab_data:
-    st.subheader("Measurements and export")
-    st.caption("The table reflects the current sidebar filters.")
-    st.dataframe(filtered_data, use_container_width=True, hide_index=True)
-    csv_bytes = filtered_data.to_csv(index=False).encode("utf-8")
-    st.download_button("⬇️ Download filtered readings (CSV)", csv_bytes,
-                       file_name="wifi_measurements_filtered.csv", mime="text/csv")
-    summary_csv = summary.to_csv(index=False).encode("utf-8")
-    st.download_button("⬇️ Download location summary (CSV)", summary_csv,
-                       file_name="wifi_location_summary.csv", mime="text/csv")
-    report_lines = [
-        "WI-FI QUALITY MAPPING — SUMMARY REPORT",
-        f"Generated: {datetime.now().astimezone().isoformat(timespec='seconds')}",
-        f"Locations shown: {len(summary)}",
-        f"Readings shown: {len(filtered_data)}",
-        f"Mean RSSI: {filtered_data['rssi_dbm'].mean():.2f} dBm",
-        f"Strongest: {strongest['location_id']} ({strongest['rssi_dbm']:.2f} dBm)",
-        f"Weakest: {weakest['location_id']} ({weakest['rssi_dbm']:.2f} dBm)",
-        f"Locations below −80 dBm mean RSSI: {dead_count}",
-        "",
-        "Location summary:",
-        summary[["location_id","x_m","y_m","readings","rssi_dbm","signal_quality","status"]].to_string(index=False),
-        "",
-        "Caution: Coordinates are assumed indoor coordinates. RSSI thresholds are indicators, not a substitute for connectivity/throughput tests.",
-    ]
-    st.download_button("⬇️ Download text summary report", "\n".join(report_lines).encode("utf-8"),
-                       file_name="wifi_quality_report.txt", mime="text/plain")
+    st.markdown("<div class='guide-card'><b>Why this matters:</b> this is the audit trail behind every chart. Filter by location or SSID, check how many rows passed validation, and export the readings so results can be reproduced.</div>", unsafe_allow_html=True)
+    st.markdown('<div class="section-kicker">Data explorer</div><h3>Measurement ledger</h3>',unsafe_allow_html=True)
+    search=st.text_input("Filter by location ID or SSID",placeholder="Type a location or network name")
+    filtered=measurements.copy()
+    if search:
+        mask=filtered.location_id.astype(str).str.contains(search,case=False,na=False)|filtered.ssid.astype(str).str.contains(search,case=False,na=False)
+        filtered=filtered[mask]
+    st.caption(f"Showing {len(filtered)} of {len(measurements)} valid rows · {len(raw)-len(measurements)} row(s) excluded by validation")
+    st.dataframe(filtered,use_container_width=True,hide_index=True)
+    st.download_button("Download filtered measurements (.csv)",filtered.to_csv(index=False).encode("utf-8"),file_name="wifi_measurements_export.csv",mime="text/csv",type="primary")
+    with st.expander("Upload a CSV to inspect (does not overwrite your saved data)"):
+        uploaded=st.file_uploader("CSV file",type=["csv"])
+        if uploaded:
+            try:
+                uploaded_df=clean_measurements(pd.read_csv(uploaded)); st.success(f"Loaded {len(uploaded_df)} valid rows from uploaded file."); st.dataframe(uploaded_df,use_container_width=True,hide_index=True)
+            except Exception as exc: st.error(f"Could not read uploaded CSV: {exc}")
 
-with tab_about:
-    st.subheader("Methodology and interpretation")
-    st.markdown("""
-- **RSSI:** received signal strength in dBm. Values closer to zero generally indicate a stronger signal.
-- **Signal categories used here:** Strong ≥ −50 dBm; Moderate ≥ −60 dBm; Weak ≥ −70 dBm; Very Weak < −70 dBm.
-- **Potential dead-zone reference:** mean RSSI below −80 dBm. This is a project threshold, not a universal standard.
-- **Scanning:** the button reads the connected Wi-Fi interface through Windows `netsh wlan show interfaces`.
-- **Estimated RSSI:** Windows signal percentage is converted to a rough estimate when direct RSSI is unavailable. It is not a direct measurement.
-- **Coordinates:** represent an assumed indoor layout used to compare sampled points; they are not GPS coordinates.
-- **Heatmap/map:** only measured points are actual samples. Any apparent signal between them is not directly measured.
-- **Dead-zone results:** the dashboard applies the −80 dBm reference to the currently filtered data. Run `python .\\detect_dead_zones.py` to refresh the separate project output file if your team uses it.
-""")
-    st.warning("For a fair comparison, collect repeated readings at each location with the same device and, where possible, the same Wi-Fi band. RSSI alone does not measure internet speed.")
+with tab_report:
+    st.markdown("<div class='guide-card'><b>For evaluation:</b> export the analysis report to document the threshold, dataset size, locations analyzed and interpretation limits. Use the same threshold and measurement procedure when comparing runs.</div>", unsafe_allow_html=True)
+    st.markdown('<div class="section-kicker">Export & reproducibility</div><h3>Analysis report</h3>',unsafe_allow_html=True)
+    now=datetime.now().astimezone().isoformat(timespec="seconds")
+    report_lines=["Wi-Fi Quality Mapping — Coverage Analysis Report",f"Generated: {now}",f"Threshold: {threshold} dBm",f"Valid measurements: {len(measurements)}",f"Locations analyzed: {len(summary)}",f"Locations in current view: {len(view)}",f"Rows excluded during validation: {len(raw)-len(measurements)}", "", "Interpretation notes:","- Signal categories are heuristic RSSI bands, not a certification of user experience.","- A potential dead zone is a location whose mean RSSI is below the selected threshold.","- RSSI alone cannot prove loss of connectivity or poor throughput.","- Interpolated coverage surface is estimated between measurement points.","", "Location summary:"]
+    if not view.empty:
+        report_lines.append(view[["location_id","x_m","y_m","mean_rssi_dbm","min_rssi_dbm","max_rssi_dbm","std_dev_db","readings","signal_quality","status"]].round(2).to_string(index=False))
+    report_text="\n".join(report_lines)
+    st.text_area("Report preview",report_text,height=350)
+    st.download_button("Download text report",report_text.encode("utf-8"),file_name="wifi_coverage_report.txt",mime="text/plain",type="primary")
+    html="<html><head><meta charset='utf-8'><title>Wi-Fi Coverage Report</title><style>body{font:15px Arial;max-width:1000px;margin:40px auto;color:#17233b}h1{color:#0e7777}pre{white-space:pre-wrap;background:#f4f7fa;padding:20px;border-radius:10px}</style></head><body><h1>Wi-Fi Quality Mapping / Wi-Fi Coverage Report</h1><p>Generated analysis summary</p><pre>"+report_text.replace("&","&amp;").replace("<","&lt;").replace(">","&gt;")+"</pre></body></html>"
+    st.download_button("Download HTML report",html.encode("utf-8"),file_name="wifi_coverage_report.html",mime="text/html")
+    st.markdown("#### Methodology & limitations")
+    st.markdown("- **Mean RSSI:** average signal power for repeated samples at each location.\n- **Variability:** standard deviation highlights unstable readings.\n- **Dead-zone flag:** mean RSSI below the selected threshold; threshold should be calibrated for the target environment.\n- **Signal categories:** Excellent ≥ −50, Good ≥ −60, Fair ≥ −67, Weak ≥ −75, Very weak below −75 dBm.\n- **Interpolation:** inverse-distance weighting creates a visual estimate only; more measured points improve spatial reliability.\n- **Windows scan:** Windows `netsh` reports signal percentage, not direct RSSI; the displayed conversion is only a rough estimate.")
 
-st.caption("Wi-Fi Quality Studio · Local Streamlit application · Data is stored in your project's data/wifi_measurements.csv")
+st.markdown("<hr style='border:0;border-top:1px solid #e4eaf1;margin-top:30px'>",unsafe_allow_html=True)
+st.caption("Wi-Fi Quality Mapping · Network diagnostics research prototype · Use repeated, consistently collected measurements before making deployment decisions.")
